@@ -1,3 +1,5 @@
+import time
+
 import bcrypt
 import re
 from fastapi import FastAPI, Request, Depends
@@ -8,7 +10,16 @@ from database import engine, SessionLocal, Base
 from models import User
 from auth import create_access_token
 from fastapi import HTTPException, Header
+import pyotp
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 Base.metadata.create_all(bind=engine)
 
 def is_valid_email(email):
@@ -28,12 +39,6 @@ def get_db():
     finally:
         db.close()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://localhost:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 @app.post("/signup")
 async def signup(req: Request, db: Session = Depends(get_db)):
@@ -41,6 +46,11 @@ async def signup(req: Request, db: Session = Depends(get_db)):
     username = data.get("username")
     email = data.get("email")
     password = data.get("password")
+    otp = data.get("otp")
+    totp_secret = data.get("totp_secret")
+    print("Received totp_secret:", totp_secret)
+    print("Received OTP:", otp)
+
     if not username or not password or not email:
         return {"success": False, "message": "Missing fields."}
     if not is_valid_email(email):
@@ -54,24 +64,57 @@ async def signup(req: Request, db: Session = Depends(get_db)):
     if not check_password_requirements(password):
         return {"success": False, "message": "Password must contain an uppercase, lowercase letter, digit and special character."}
 
-    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    user = User(username=username, email=email,password_hash=password_hash)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return {"success": True, "message": "User registered successfully."}
+
+    if not otp:
+        totp_secret = pyotp.random_base32()
+        totp_uri = pyotp.TOTP(totp_secret).provisioning_uri(name=username, issuer_name="Secure OTP")
+        return {
+            "success": True,
+            "otp_required": True,
+            "otp_uri": totp_uri,
+            "totp_secret": totp_secret,
+            "message": "Scan the QR code from otp_uri with your authenticator app, then enter the OTP."
+        }
+    else:
+        if not totp_secret:
+            print("no totp_secret")
+            return {"success": False, "message": "Missing TOTP secret for verification."}
+        totp = pyotp.TOTP(totp_secret)
+        if not totp.verify(otp,valid_window=10):
+            print("Received totp_secret repr:", repr(totp_secret))
+            print("Received OTP repr:", repr(otp))
+            print("Server time:",time.time())
+            print("TOTP token for now",totp.now())
+            print("verification failed")
+            return {"success": False, "message": "Invalid OTP,please try again."}
+
+        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        user = User(username=username, email=email,password_hash=password_hash, totp_secret=totp_secret)
+        print(user)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return {"success": True, "message": "User registered successfully."}
 
 @app.post("/login")
 async def login(req: Request,db: Session = Depends(get_db)):
     data = await req.json()
     username = data.get("username")
     password = data.get("password")
+    otp = data.get("otp")
     if not username or not password:
         return {"success": False, "message": "Username and password required."}
 
     user = db.query(User).filter(User.username == username).first()
     if not user or not bcrypt.checkpw(password.encode(), user.password_hash.encode()):
         return {"success": False, "message": "Incorrect credentials."}
+
+    if not otp:
+        return {"success": False, "message": "OTP required for login."}
+    totp = pyotp.TOTP(user.totp_secret)
+    if not totp.verify(otp,valid_window=10):
+        return {"success": False, "message": "Invalid OTP."}
+
     token = create_access_token({"sub":username})
     return {"success":True, "token":token, "message": "Login successful."}
 

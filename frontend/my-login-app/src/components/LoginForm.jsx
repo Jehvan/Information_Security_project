@@ -5,13 +5,14 @@ function LoginForm( {onLoginSuccess} ) {
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
     const [message, setMessage] = useState("");
+    const [otp, setOtp] = useState("");
 
     const handleSubmit = (e) => {
         e.preventDefault()
         fetch ("https://localhost:8000/login", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username,password }),
+            body: JSON.stringify({ username,password,otp }),
         })
             .then((res) => res.json())
             .then((data) => {
@@ -42,6 +43,12 @@ function LoginForm( {onLoginSuccess} ) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
             />
+            <input
+                    type="text"
+                    placeholder="OTP"
+                    value={otp}
+                    onChange={(e) => setOtp(e.target.value)}
+                />
             <button type="submit">Log in</button>
             {message && <p>{message}</p>}
         </form>
