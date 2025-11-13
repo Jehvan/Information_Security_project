@@ -11,6 +11,10 @@ from fastapi import HTTPException, Header
 app = FastAPI()
 Base.metadata.create_all(bind=engine)
 
+def is_valid_email(email):
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email))
+
 def check_password_requirements(password):
     if re.search(r"[a-z]", password) is not None and re.search(r"[A-Z]", password) is not None and re.search(r"[0-9]", password) is not None and re.search(r"\W", password) is not None:
         return True
@@ -37,8 +41,10 @@ async def signup(req: Request, db: Session = Depends(get_db)):
     username = data.get("username")
     email = data.get("email")
     password = data.get("password")
-    if not username or not password:
+    if not username or not password or not email:
         return {"success": False, "message": "Missing fields."}
+    if not is_valid_email(email):
+        return {"success": False, "message": "Email is not valid."}
     if db.query(User).filter(User.username == username).first():
         return {"success": False, "message": "Username already exists."}
     if db.query(User).filter(User.email == email).first():
