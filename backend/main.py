@@ -1,7 +1,7 @@
 import time
 import bcrypt
 import re
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, Request, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from auth import decode_access_token
@@ -11,6 +11,8 @@ from auth import create_access_token
 from fastapi import HTTPException, Header
 import pyotp
 app = FastAPI()
+EXPIRES_SECONDS=60
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://localhost:5173"],
@@ -96,7 +98,7 @@ async def signup(req: Request, db: Session = Depends(get_db)):
         return {"success": True, "message": "User registered successfully."}
 
 @app.post("/login")
-async def login(req: Request,db: Session = Depends(get_db)):
+async def login(req: Request, response: Response,db: Session = Depends(get_db)):
     data = await req.json()
     username = data.get("username")
     password = data.get("password")
@@ -114,16 +116,38 @@ async def login(req: Request,db: Session = Depends(get_db)):
     if not totp.verify(otp,valid_window=10):
         return {"success": False, "message": "Invalid OTP."}
 
-    token = create_access_token({"sub":username})
-    return {"success":True, "token":token, "message": "Login successful."}
+    token = create_access_token({"sub":username, "role": "USER"}, expires_seconds=EXPIRES_SECONDS);
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=EXPIRES_SECONDS,
+        path="/"
+    )
+    return {"success":True, "message": "Login successful.", "expires_in":EXPIRES_SECONDS}
 
-@app.get("/protected")
-async def protected_route(authorization: str = Header(None)):
-    print(f"Authorization header: {authorization}")
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing token")
-    token = authorization.split(" ")[1]
+def get_current_user(request: Request):
+    token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     payload = decode_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return {"message": f"Hello, {payload['sub']}!"}
+
+    return payload
+
+@app.get("/protected")
+async def protected_route(user=Depends(get_current_user)):
+    return {"message": f"Hello, {user['sub']}!"}
+
+@app.post("/logout")
+async def logout(response: Response):
+    response.delete_cookie(
+        key="access_token",
+        path="/"
+    )
+    return {"success": True, "message": "Logged out"}
+

@@ -1,25 +1,54 @@
-import React, {useEffect, useState} from 'react';
+import React, { useEffect, useState } from 'react';
 import './App.css'
 import LoginForm from "./components/LoginForm"
 import SignUpForm from "./components/SignupForm"
 import ProtectedContent from "./components/ProtectedContent"
+import log from "eslint-plugin-react/lib/util/log.js";
 
 function App() {
     const [showSignUp, setShowSignUp] = useState(false);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [logoutTimer, setLogoutTimer] = useState(null);
 
     useEffect(() => {
-        setIsAuthenticated(!!localStorage.getItem("token"));
-    }, [])
+        fetch("https://localhost:8000/protected", {
+            credentials: "include"
+        })
+            .then(res => {
+                if (res.status === 200) {
+                    setIsAuthenticated(true);
+                } else {
+                    setIsAuthenticated(false);
+                }
+            })
+            .catch(() => setIsAuthenticated(false));
+    }, []);
 
-    const handleLoginSuccess = () => {
+    const handleLoginSuccess = (expiresIn = 60) => {
         setIsAuthenticated(true);
-    }
+
+        if (logoutTimer) {
+            clearTimeout(logoutTimer);
+        }
+
+        const timer = setTimeout(() => {
+            alert("Session expired");
+            setIsAuthenticated(false);
+        }, expiresIn * 1000);
+
+        setLogoutTimer(timer);
+    };
+
 
     const handleLogout = () => {
-        localStorage.removeItem("token");
-        setIsAuthenticated(false)
-    }
+        fetch("https://localhost:8000/logout", {
+            method: "POST",
+            credentials: "include"
+        }).finally(() => {
+            if(logoutTimer) clearTimeout(logoutTimer);
+            setIsAuthenticated(false);
+        });
+    };
 
     return (
         <div>
@@ -29,7 +58,7 @@ function App() {
                     {showSignUp ? (
                         <SignUpForm/>
                     ) : (
-                        <LoginForm onLoginSuccess={handleLoginSuccess} />
+                        <LoginForm onLoginSuccess={handleLoginSuccess}/>
                     )}
                     <p>
                         {showSignUp ? (
@@ -39,7 +68,7 @@ function App() {
                             </>
                         ) : (
                             <>
-                                Don't have an account?{" "}
+                                Don&#39;t have an account?{" "}
                                 <button onClick={() => setShowSignUp(true)}>Sign Up</button>
                             </>
                         )}
@@ -47,15 +76,12 @@ function App() {
                 </>
             ) : (
                 <>
-
                     <ProtectedContent/>
-                    <button onClick={handleLogout}>
-                        Log Out
-                    </button>
+                    <button onClick={handleLogout}>Log Out</button>
                 </>
             )}
         </div>
     );
 }
 
-export default App
+export default App;

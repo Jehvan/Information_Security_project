@@ -1,28 +1,41 @@
 import time
+
 import jwt
 import os
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from datetime import datetime,timedelta
+
 load_dotenv()
 SECRET_KEY = os.environ.get("SECRET_KEY")
-print(f"SECRET_KEY: {SECRET_KEY}")
+ALGORITHM = "HS256"
 
-def create_access_token(data, expires_minutes=120):
+def create_access_token(data: dict, expires_seconds: int):
     payload = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=expires_minutes)
-    payload["exp"] = int(expire.timestamp())
-    print(f"Token payload before encodeing: {payload}")
-    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    now = int(time.time())
+
+    payload.update({
+        "iat": now,
+        "exp": now + expires_seconds,
+    })
+
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
     return token
 
-def decode_access_token(token:str):
+
+def decode_access_token(token: str):
     try:
-        decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"], leeway=30)
-        print(f"Decoded token: {decoded}")
+        now = int(datetime.utcnow().timestamp())
+        decoded = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            leeway=30
+        )
+        print("NOW (server):", now)
+        print("EXP (token):", decoded.get("exp"))
+        print("DIFF:", decoded.get("exp") - now)
         return decoded
     except jwt.ExpiredSignatureError:
-        print("Token expired")
+        print("Token expired (server time mismatch)")
         return None
-    except jwt.InvalidTokenError as e:
-        print(f"Invalid token: {str(e)}")
-        return None
+

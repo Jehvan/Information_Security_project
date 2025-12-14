@@ -1,27 +1,28 @@
-import React, {useState} from "react";
+import React, { useState, useEffect } from "react";
 
 function ProtectedContent() {
-    const [message,setMessage] = useState('');
+    const [message, setMessage] = useState("");
 
-    React.useEffect(() => {
-        fetch("https://localhost:8000/protected",
-            {
-                headers: {
-                    "Authorization": "Bearer " + localStorage.getItem("token"),
-                }
-            })
+    useEffect(() => {
+        fetch("https://localhost:8000/protected", {
+            method: "GET",
+            credentials: "include"
+        })
             .then(res => {
                 if (res.status === 401) {
-                    alert("Session expired. Please login again.")
-                    localStorage.removeItem("token");
-                    window.location.reload();
+                    alert("Session expired. Please login again.");
+                    window.location.href = "/login";
+                    return;
                 }
                 return res.json();
             })
             .then(data => {
-                setMessage(data.message);
-            })
-    }, [])
+                if (data) {
+                    setMessage(data.message);
+                }
+            });
+    }, []);
+
     return <div>{message}</div>;
 }
 
