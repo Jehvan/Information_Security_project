@@ -2,13 +2,15 @@ import React, { useEffect, useState } from 'react';
 import './App.css'
 import LoginForm from "./components/LoginForm"
 import SignUpForm from "./components/SignupForm"
-import ProtectedContent from "./components/ProtectedContent"
-import log from "eslint-plugin-react/lib/util/log.js";
+import Dashboard from "./components/Dashboard";
+
+
 
 function App() {
     const [showSignUp, setShowSignUp] = useState(false);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [logoutTimer, setLogoutTimer] = useState(null);
+    const [user, setUser] = useState(null);
 
     useEffect(() => {
         fetch("https://localhost:8000/protected", {
@@ -23,6 +25,21 @@ function App() {
             })
             .catch(() => setIsAuthenticated(false));
     }, []);
+
+    useEffect(() => {
+        if (!isAuthenticated) {
+            setUser(null);
+            return;
+        }
+
+        fetch("https://localhost:8000/me", {
+            credentials: "include"
+        })
+            .then(res => res.json())
+            .then(data => setUser(data))
+            .catch(() => setUser(null));
+    }, [isAuthenticated]);
+
 
     const handleLoginSuccess = (expiresIn = 60) => {
         setIsAuthenticated(true);
@@ -76,7 +93,7 @@ function App() {
                 </>
             ) : (
                 <>
-                    <ProtectedContent/>
+                    {user && <Dashboard user={user} />}
                     <button onClick={handleLogout}>Log Out</button>
                 </>
             )}
