@@ -1,30 +1,70 @@
-import React, {useState} from "react";
-import "./SignUpForm.css";
+/**
+ * SignUpForm.jsx
+ * --------------
+ * User registration form with TOTP (OTP) enrollment.
+ *
+ * Registration flow:
+ * 1. User submits username, email, and password
+ * 2. Backend generates a TOTP secret and QR code
+ * 3. User scans QR code with authenticator app
+ * 4. User submits OTP to complete registration
+ */
+
+import React, { useState } from "react";
 import QRCode from "react-qr-code";
+import "./SignUpForm.css";
 
 function SignUpForm() {
+    // ---------------------------------------------
+    // Form state (initial registration data)
+    // ---------------------------------------------
+
     const [username, setUsername] = useState("");
+    const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
-    const [message, setMessage] = useState("");
-    const [email, setEmail] = useState("");
-    const [otpStep, setOtpStep] = useState("");
-    const [otpUri, setOtpUri] = useState("");
-    const [totpSecret, setTotpSecret] = useState("");
-    const [otp,setOtp] = useState("");
 
-    const handleFirstSubmit = (e) => {
-        e.preventDefault()
-        if (!username || !password || !confirmPassword || !email) {
+    // ---------------------------------------------
+    // OTP enrollment state
+    // ---------------------------------------------
+
+    // Whether the form is in OTP verification step
+    const [otpStep, setOtpStep] = useState(false);
+
+    // URI used to generate QR code for authenticator apps
+    const [otpUri, setOtpUri] = useState("");
+
+    // TOTP secret returned by backend (used only to finish signup)
+    const [totpSecret, setTotpSecret] = useState("");
+
+    // OTP entered by the user
+    const [otp, setOtp] = useState("");
+
+    // ---------------------------------------------
+    // UI feedback
+    // ---------------------------------------------
+
+    const [message, setMessage] = useState("");
+
+    // ---------------------------------------------
+    // Step 1: Submit basic registration data
+    // ---------------------------------------------
+    const handleInitialSubmit = (event) => {
+        event.preventDefault();
+
+        // Basic client-side validation
+        if (!username || !email || !password || !confirmPassword) {
             setMessage("All fields are required");
             return;
         }
+
         if (password !== confirmPassword) {
-            setMessage("Passwords don't match");
+            setMessage("Passwords do not match");
             return;
         }
 
-        fetch ("https://localhost:8000/signup", {
+        // Send initial signup request
+        fetch("https://localhost:8000/signup", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ username, email, password }),
@@ -32,92 +72,127 @@ function SignUpForm() {
             .then((res) => res.json())
             .then((data) => {
                 if (data.otp_required) {
+                    // Backend requests OTP enrollment
                     setOtpStep(true);
                     setOtpUri(data.otp_uri);
                     setTotpSecret(data.totp_secret);
-                    setMessage("Scan the QR code and enter the OTP from your authenticator app.");
+                    setMessage(
+                        "Scan the QR code and enter the OTP from your authenticator app."
+                    );
                 } else {
                     setMessage(data.message || "Signup failed.");
                 }
             })
             .catch(() => {
-                setMessage("Network Error.")
-            })
-    }
+                setMessage("Network error. Please try again.");
+            });
+    };
 
-    const handleOtpSubmit = (e) => {
-        e.preventDefault();
-        console.log("Finish signup clicked", { username, email, password, otp, totpSecret })
-        fetch ("https://localhost:8000/signup", {
+    // ---------------------------------------------
+    // Step 2: Submit OTP to complete registration
+    // ---------------------------------------------
+    const handleOtpSubmit = (event) => {
+        event.preventDefault();
+
+        fetch("https://localhost:8000/signup", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username, email, password, otp, totp_secret: totpSecret }),
+            body: JSON.stringify({
+                username,
+                email,
+                password,
+                otp,
+                totp_secret: totpSecret,
+            }),
         })
             .then((res) => res.json())
             .then((data) => {
-                setMessage(data.message || (data.success ? "Signed up successfully" : "Signup failed."));
                 if (data.success) {
-                    setOtpStep(false)
-                    setUsername("")
-                    setPassword("")
-                    setConfirmPassword("")
-                    setEmail("")
-                    setOtpUri("")
-                    setTotpSecret("")
-                    setOtp();
+                    setMessage("Signed up successfully");
+
+                    // Reset form state
+                    setOtpStep(false);
+                    setUsername("");
+                    setEmail("");
+                    setPassword("");
+                    setConfirmPassword("");
+                    setOtp("");
+                    setOtpUri("");
+                    setTotpSecret("");
+                } else {
+                    setMessage(data.message || "Signup failed.");
                 }
             })
             .catch(() => {
-                setMessage("Network Error.")
-            })
-    }
+                setMessage("Network error. Please try again.");
+            });
+    };
 
-
+    // ---------------------------------------------
+    // Render form
+    // ---------------------------------------------
     return (
-        <form className="signup-form" onSubmit={otpStep ? handleOtpSubmit : handleFirstSubmit}>
+        <form
+            className="signup-form"
+            onSubmit={otpStep ? handleOtpSubmit : handleInitialSubmit}
+        >
             <input
                 type="text"
                 placeholder="Username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                disabled = {otpStep}
+                disabled={otpStep}
+                required
             />
+
             <input
-                type="text"
+                type="email"
                 placeholder="Email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                disabled = {otpStep}
+                disabled={otpStep}
+                required
             />
+
             <input
                 type="password"
                 placeholder="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                disabled = {otpStep}
+                disabled={otpStep}
+                required
             />
+
             <input
                 type="password"
                 placeholder="Confirm Password"
                 value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-                disabled = {otpStep}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                disabled={otpStep}
+                required
             />
+
             {otpStep && (
                 <>
                     <div>
                         <p>Scan this QR code with your authenticator app:</p>
                         <QRCode value={otpUri} />
                     </div>
+
                     <input
                         type="text"
                         placeholder="Enter OTP from app"
                         value={otp}
-                        onChange={e => setOtp(e.target.value)}
-                        />
+                        onChange={(e) => setOtp(e.target.value)}
+                        required
+                    />
                 </>
             )}
-            <button type="submit">{otpStep ? "Finish Signup" : "Sign up"}</button>
+
+            <button type="submit">
+                {otpStep ? "Finish Signup" : "Sign up"}
+            </button>
+
             {message && <p>{message}</p>}
         </form>
     );

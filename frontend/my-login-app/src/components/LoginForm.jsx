@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import "./LoginForm.css";
 import PropTypes from "prop-types";
+import { login } from "../services/api";
 
 function LoginForm({ onLoginSuccess }) {
     const [username, setUsername] = useState("");
@@ -11,14 +12,8 @@ function LoginForm({ onLoginSuccess }) {
     const handleSubmit = (e) => {
         e.preventDefault();
 
-        fetch("https://localhost:8000/login", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username, password, otp }),
-        })
-            .then(res => res.json())
-            .then(data => {
+        login({ username, password, otp })
+            .then((data) => {
                 if (data.success) {
                     setMessage("Welcome!");
                     if (onLoginSuccess) onLoginSuccess(data.expires_in);
@@ -58,7 +53,7 @@ function LoginForm({ onLoginSuccess }) {
 }
 
 LoginForm.propTypes = {
-    onLoginSuccess: PropTypes.func
+    onLoginSuccess: PropTypes.func,
 };
 
 export default LoginForm;
