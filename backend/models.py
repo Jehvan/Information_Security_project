@@ -7,9 +7,9 @@ This file defines the structure of database tables
 used by the application.
 """
 
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, DateTime
 from database import Base
-
+from datetime import datetime
 
 # ---- Role constants (used for RBAC) ----
 ROLE_USER = "USER"
@@ -50,3 +50,25 @@ class User(Base):
     # Role used for Role-Based Access Control (RBAC)
     # Possible values: USER, MODERATOR, ADMIN
     role = Column(String, nullable=False, default=ROLE_USER)
+
+
+
+class ResourcePermission(Base):
+    __tablename__ = "resource_permissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # User who receives the permission
+    username = Column(String, index=True, nullable=False)
+
+    # Resource identifier (e.g. "moderation_reports")
+    resource = Column(String, index=True, nullable=False)
+
+    # Expiration timestamp (UTC)
+    expires_at = Column(DateTime, nullable=False)
+
+    # Admin who granted the permission
+    granted_by = Column(String, nullable=False)
+
+    # Audit timestamp
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

@@ -74,3 +74,51 @@ export async function setUserRole(username, newRole) {
 
     return res.json();
 }
+
+/**
+ * ADMIN: Grant temporary access to a resource
+ */
+export async function grantResourceAccess(username, resource, durationSeconds) {
+    const res = await fetch(`${API_BASE}/admin/grant-access`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            username,
+            resource,
+            duration_seconds: durationSeconds,
+        }),
+    });
+
+    return res.json();
+}
+
+/**
+ * Fetch moderation reports (permission-based)
+ */
+export async function fetchModerationReports() {
+    const res = await fetch(`${API_BASE}/moderation/reports`, {
+        credentials: "include",
+    });
+
+    if (!res.ok) {
+        throw new Error("Access denied");
+    }
+
+    return res.json();
+}
+
+
+export async function fetchMyPermissions() {
+    const res = await fetch(`${API_BASE}/me/permissions`, {
+        credentials: "include",
+    });
+
+    if (!res.ok) {
+        throw new Error("Failed to fetch permissions");
+    }
+
+    return res.json();
+}

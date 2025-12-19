@@ -12,6 +12,11 @@ from fastapi import Request, HTTPException, status, Depends
 
 from auth import decode_access_token
 
+from datetime import datetime, timezone
+from sqlalchemy.orm import Session
+from models import ResourcePermission
+
+
 
 def get_current_user(request: Request) -> dict:
     """
@@ -77,3 +82,42 @@ def require_roles(*roles: str):
         return payload
 
     return role_checker
+
+
+def has_resource_access(
+    payload: dict,
+    resource: str,
+    db: Session,
+    allowed_roles: tuple = ("ADMIN", "MODERATOR"),
+) -> bool:
+    """
+    Check whether the current user has access to a specific resource.
+
+    Access is granted if:
+    - the user's role is in allowed_roles
+    OR
+    - the user has a valid, unexpired temporary permission for the resource
+    """
+
+    username = payload.get("sub")
+    role = payload.get("role")
+
+    # Role-based access (RBAC)
+    if role in allowed_roles:
+        return True
+
+    # Resource-based temporary access
+    now = datetime.utcnow()
+
+    permission = (
+        db.query(ResourcePermission)
+        .filter(
+            ResourcePermission.username == username,
+            ResourcePermission.resource == resource,
+            ResourcePermission.expires_at > now,
+        )
+        .first()
+    )
+    print(permission)
+
+    return permission is not None

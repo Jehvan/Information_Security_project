@@ -11,6 +11,7 @@ This file defines:
 """
 
 import re
+from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import pyotp
@@ -20,8 +21,8 @@ from sqlalchemy.orm import Session
 
 from auth import create_access_token
 from database import engine, Base, get_db
-from dependencies import get_current_user, require_roles
-from models import User, ROLE_ADMIN, ROLE_MODERATOR, ROLE_USER
+from dependencies import get_current_user, require_roles, has_resource_access
+from models import User, ROLE_ADMIN, ROLE_MODERATOR, ROLE_USER, ResourcePermission
 
 # -------------------------------------------------
 # Application setup
@@ -63,11 +64,12 @@ def check_password_requirements(password: str) -> bool:
     - special character
     """
     return (
-        re.search(r"[a-z]", password)
-        and re.search(r"[A-Z]", password)
-        and re.search(r"[0-9]", password)
-        and re.search(r"\W", password)
+            re.search(r"[a-z]", password)
+            and re.search(r"[A-Z]", password)
+            and re.search(r"[0-9]", password)
+            and re.search(r"\W", password)
     )
+
 
 # -------------------------------------------------
 # Authentication routes
@@ -144,6 +146,7 @@ async def signup(request: Request, db: Session = Depends(get_db)):
 
     return {"success": True, "message": "User registered successfully"}
 
+
 @app.post("/login")
 async def login(request: Request, response: Response, db: Session = Depends(get_db)):
     """
@@ -185,11 +188,13 @@ async def login(request: Request, response: Response, db: Session = Depends(get_
 
     return {"success": True, "expires_in": EXPIRES_SECONDS}
 
+
 @app.post("/logout")
 async def logout(response: Response):
     """Logout by deleting the session cookie."""
     response.delete_cookie(key="access_token", path="/")
     return {"success": True}
+
 
 # -------------------------------------------------
 # Protected routes
@@ -203,6 +208,7 @@ def protected(payload=Depends(get_current_user)):
         "role": payload["role"],
     }
 
+
 @app.get("/me")
 def get_me(payload=Depends(get_current_user)):
     """Return current authenticated user's identity."""
@@ -210,6 +216,31 @@ def get_me(payload=Depends(get_current_user)):
         "username": payload["sub"],
         "role": payload["role"],
     }
+
+@app.get("/me/permissions")
+def get_my_permissions(
+    payload=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Return all currently valid resource permissions for the logged-in user.
+    """
+    now = datetime.utcnow()
+
+    permissions = (
+        db.query(ResourcePermission)
+        .filter(
+            ResourcePermission.username == payload["sub"],
+            ResourcePermission.expires_at > now,
+        )
+        .all()
+    )
+
+    return {
+        "permissions": [p.resource for p in permissions]
+    }
+
+
 
 # -------------------------------------------------
 # Role-based access control routes
@@ -219,16 +250,53 @@ def get_me(payload=Depends(get_current_user)):
 def admin_only(payload=Depends(require_roles(ROLE_ADMIN))):
     return {"message": "Welcome admin"}
 
+
 @app.get("/moderation")
 def moderation(payload=Depends(require_roles(ROLE_ADMIN, ROLE_MODERATOR))):
     return {"message": "Moderator access granted"}
 
+@app.get("/moderation/reports")
+def view_moderation_reports(
+    payload=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    View moderation reports.
+
+    Normally restricted to MODERATOR and ADMIN,
+    but USERs may access it if they have a valid
+    temporary permission.
+    """
+
+    if not has_resource_access(
+        payload=payload,
+        resource="moderation_reports",
+        db=db,
+        allowed_roles=("ADMIN", "MODERATOR"),
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to this resource",
+        )
+
+    # Simulated protected content
+    return {
+        "resource": "moderation_reports",
+        "data": [
+            "Report #1: Spam",
+            "Report #2: Abuse",
+            "Report #3: Policy violation",
+        ],
+    }
+
+
+
 @app.post("/admin/set-role")
 def set_user_role(
-    username: str,
-    new_role: str,
-    payload=Depends(require_roles(ROLE_ADMIN)),
-    db: Session = Depends(get_db),
+        username: str,
+        new_role: str,
+        payload=Depends(require_roles(ROLE_ADMIN)),
+        db: Session = Depends(get_db),
 ):
     """
     Admin-only endpoint to update user roles.
@@ -243,4 +311,52 @@ def set_user_role(
     user.role = new_role
     db.commit()
 
-    return {"success": True}
+    return {"success": True,
+            "message": f"User {username} role updated to {new_role} successfully"
+            }
+
+
+@app.post("/admin/grant-access")
+def grant_resource_access(
+        data: dict,
+        payload=Depends(require_roles("ADMIN")),
+        db: Session = Depends(get_db),
+):
+    """
+    ADMIN-only endpoint to grant temporary access to a resource.
+    """
+
+    username = data.get("username")
+    resource = data.get("resource")
+    duration_seconds = data.get("duration_seconds")
+
+    if not username or not resource or not duration_seconds:
+        raise HTTPException(
+            status_code=400,
+            detail="username, resource and duration_seconds are required",
+        )
+
+    # Ensure target user exists
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Calculate expiration time (UTC)
+    expires_at = datetime.utcnow() + timedelta(seconds=int(duration_seconds))
+
+    # Create permission record
+    permission = ResourcePermission(
+        username=username,
+        resource=resource,
+        expires_at=expires_at,
+        granted_by=payload["sub"],  # admin username
+    )
+
+    db.add(permission)
+    db.commit()
+    db.refresh(permission)
+
+    return {
+        "success": True,
+        "message": f"Access to '{resource}' granted to {username} until {expires_at.isoformat()}",
+    }
