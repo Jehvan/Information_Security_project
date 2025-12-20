@@ -23,6 +23,7 @@ from auth import create_access_token
 from database import engine, Base, get_db
 from dependencies import get_current_user, require_roles, has_resource_access
 from models import User, ROLE_ADMIN, ROLE_MODERATOR, ROLE_USER, ResourcePermission
+from datetime import datetime, timezone
 
 # -------------------------------------------------
 # Application setup
@@ -48,6 +49,10 @@ Base.metadata.create_all(bind=engine)
 # -------------------------------------------------
 # Helper validation functions
 # -------------------------------------------------
+
+def utcnow():
+    return datetime.utcnow()
+
 
 def is_valid_email(email: str) -> bool:
     """Validate email format."""
@@ -222,10 +227,7 @@ def get_my_permissions(
     payload=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Return all currently valid resource permissions for the logged-in user.
-    """
-    now = datetime.utcnow()
+    now = utcnow()
 
     permissions = (
         db.query(ResourcePermission)
@@ -237,7 +239,15 @@ def get_my_permissions(
     )
 
     return {
-        "permissions": [p.resource for p in permissions]
+        "permissions": [
+            {
+                "resource": p.resource,
+                "expires_at": p.expires_at
+                    .replace(tzinfo=timezone.utc)
+                    .isoformat(),
+            }
+            for p in permissions
+        ]
     }
 
 
@@ -318,12 +328,12 @@ def set_user_role(
 
 @app.post("/admin/grant-access")
 def grant_resource_access(
-        data: dict,
-        payload=Depends(require_roles("ADMIN")),
-        db: Session = Depends(get_db),
+    data: dict,
+    payload=Depends(require_roles("ADMIN")),
+    db: Session = Depends(get_db),
 ):
     """
-    ADMIN-only endpoint to grant temporary access to a resource.
+    ADMIN-only endpoint to grant or extend temporary access to a resource.
     """
 
     username = data.get("username")
@@ -341,22 +351,118 @@ def grant_resource_access(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Calculate expiration time (UTC)
-    expires_at = datetime.utcnow() + timedelta(seconds=int(duration_seconds))
-
-    # Create permission record
-    permission = ResourcePermission(
-        username=username,
-        resource=resource,
-        expires_at=expires_at,
-        granted_by=payload["sub"],  # admin username
+    expires_at = utcnow() + timedelta(
+        seconds=int(duration_seconds)
     )
 
-    db.add(permission)
+    # 🔹 CHECK if permission already exists
+    existing_permission = (
+        db.query(ResourcePermission)
+        .filter(
+            ResourcePermission.username == username,
+            ResourcePermission.resource == resource
+        )
+        .first()
+    )
+
+    if existing_permission:
+        # 🔁 Extend existing permission
+        existing_permission.expires_at = expires_at
+        existing_permission.granted_by = payload["sub"]
+    else:
+        # ➕ Create new permission
+        permission = ResourcePermission(
+            username=username,
+            resource=resource,
+            expires_at=expires_at,
+            granted_by=payload["sub"],
+        )
+        db.add(permission)
+
     db.commit()
-    db.refresh(permission)
 
     return {
         "success": True,
         "message": f"Access to '{resource}' granted to {username} until {expires_at.isoformat()}",
+    }
+
+@app.get("/case-files")
+def view_case_files(
+    payload=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not has_resource_access(
+        payload,
+        resource="case_files",
+        db=db,
+        allowed_roles=("ADMIN", "MODERATOR"),
+    ):
+        raise HTTPException(status_code=403)
+
+    return {
+        "data": [
+            "Case File A",
+            "Case File B",
+            "Case File C",
+        ]
+    }
+
+
+@app.get("/admin/temp-panel")
+def temp_admin_panel(
+    payload=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not has_resource_access(
+        payload,
+        resource="admin_dashboard",
+        db=db,
+        allowed_roles=(),
+    ):
+        raise HTTPException(status_code=403)
+
+    return {
+        "data": {
+            "system_status": "OK",
+            "active_users": 42,
+            "alerts": 0,
+        }
+    }
+
+@app.post("/admin/revoke-access")
+def revoke_resource_access(
+    data: dict,
+    payload=Depends(require_roles(ROLE_ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """
+    ADMIN-only endpoint to revoke a resource permission immediately.
+    """
+    username = data.get("username")
+    resource = data.get("resource")
+
+    if not username or not resource:
+        raise HTTPException(
+            status_code=400,
+            detail="username and resource are required",
+        )
+
+    permission = (
+        db.query(ResourcePermission)
+        .filter(
+            ResourcePermission.username == username,
+            ResourcePermission.resource == resource,
+        )
+        .first()
+    )
+
+    if not permission:
+        raise HTTPException(status_code=404, detail="Permission not found")
+
+    db.delete(permission)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": f"Access to '{resource}' revoked from {username}",
     }

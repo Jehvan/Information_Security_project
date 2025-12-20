@@ -122,3 +122,52 @@ export async function fetchMyPermissions() {
 
     return res.json();
 }
+
+
+/**
+ * Fetch case files (temporary resource access)
+ */
+export async function fetchCaseFiles() {
+    const res = await fetch(`${API_BASE}/case-files`, {
+        credentials: "include",
+    });
+
+    if (!res.ok) {
+        throw new Error("Failed to fetch case files");
+    }
+
+    return res.json();
+}
+
+/**
+ * Fetch temporary admin panel data
+ */
+export async function fetchAdminPanelData() {
+    const res = await fetch(`${API_BASE}/admin/temp-panel`, {
+        credentials: "include",
+    });
+
+    if (!res.ok) {
+        throw new Error("Failed to fetch admin panel data");
+    }
+
+    return res.json();
+}
+
+/**
+ * ADMIN: Revoke resource access
+ */
+export async function revokeResourceAccess(username, resource) {
+    const res = await fetch("https://localhost:8000/admin/revoke-access", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ username, resource }),
+    });
+
+    return res.json();
+}
+
+

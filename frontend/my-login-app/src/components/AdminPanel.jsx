@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { setUserRole, grantResourceAccess } from "../services/api";
+import { revokeResourceAccess } from "../services/api";
 
 /**
  * AdminPanel
@@ -86,14 +87,14 @@ function AdminPanel() {
 
             <p>
                 Administrative controls.
-                <br />
+                <br/>
                 <small>Only administrators can see this panel.</small>
             </p>
 
             {/* =======================
                ROLE MANAGEMENT UI
                ======================= */}
-            <hr />
+            <hr/>
             <h3>Role Management</h3>
 
             <input
@@ -118,7 +119,7 @@ function AdminPanel() {
             {/* ==============================
                RESOURCE ACCESS UI
                ============================== */}
-            <hr />
+            <hr/>
             <h3>Temporary Resource Access</h3>
 
             <input
@@ -148,6 +149,34 @@ function AdminPanel() {
             </button>
 
             {accessMessage && <p>{accessMessage}</p>}
+
+            <hr/>
+
+            <h3>Revoke Resource Access</h3>
+
+            <input
+                type="text"
+                placeholder="Username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+            />
+
+            <select value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="moderation_reports">moderation_reports</option>
+                <option value="case_files">case_files</option>
+                <option value="admin_panel">admin_panel</option>
+            </select>
+
+            <button
+                onClick={() =>
+                    revokeResourceAccess(username, role).then((res) =>
+                        setAccessMessage(res.message)
+                    )
+                }
+            >
+                Revoke Access
+            </button>
+
         </section>
     );
 }

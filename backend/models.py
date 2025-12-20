@@ -9,7 +9,10 @@ used by the application.
 
 from sqlalchemy import Column, Integer, String, DateTime
 from database import Base
-from datetime import datetime
+from datetime import datetime, timezone
+from sqlalchemy import UniqueConstraint
+
+
 
 # ---- Role constants (used for RBAC) ----
 ROLE_USER = "USER"
@@ -65,10 +68,14 @@ class ResourcePermission(Base):
     resource = Column(String, index=True, nullable=False)
 
     # Expiration timestamp (UTC)
-    expires_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
 
     # Admin who granted the permission
     granted_by = Column(String, nullable=False)
 
     # Audit timestamp
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("username", "resource", name="uq_username_resource"),
+    )
