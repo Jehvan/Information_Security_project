@@ -6,17 +6,34 @@ Authentication and authorization dependencies for FastAPI.
 This file contains:
 - get_current_user: validates the JWT session stored in a cookie
 - require_roles: enforces role-based access control (RBAC)
+- has_resource_access: hybrid RBAC + temporary resource access (JWT-first, DB-authoritative)
+
+Security notes:
+- JWT permissions are treated as a *snapshot hint*, never as authority
+- Database remains the source of truth for enforcement
+- All time comparisons are timezone-aware (UTC)
 """
 
+from datetime import datetime, timezone
 from fastapi import Request, HTTPException, status, Depends
+from sqlalchemy.orm import Session
 
 from auth import decode_access_token
-
-from datetime import datetime, timezone
-from sqlalchemy.orm import Session
 from models import ResourcePermission
 
 
+# -------------------------------------------------
+# Helpers
+# -------------------------------------------------
+
+def utcnow() -> datetime:
+    """Timezone-aware UTC now."""
+    return datetime.now(timezone.utc)
+
+
+# -------------------------------------------------
+# Authentication
+# -------------------------------------------------
 
 def get_current_user(request: Request) -> dict:
     """
@@ -29,9 +46,14 @@ def get_current_user(request: Request) -> dict:
         401 Unauthorized if the user is not authenticated
 
     Returns:
-        Decoded JWT payload (e.g. {"sub": username, "role": "ADMIN"})
+        Decoded JWT payload
+        Example:
+        {
+            "sub": "jovan",
+            "role": "USER",
+            "permissions": [...]
+        }
     """
-    # Read JWT from secure HttpOnly cookie
     token = request.cookies.get("access_token")
     if not token:
         raise HTTPException(
@@ -39,7 +61,6 @@ def get_current_user(request: Request) -> dict:
             detail="Not authenticated",
         )
 
-    # Decode and verify the token
     payload = decode_access_token(token)
     if not payload:
         raise HTTPException(
@@ -50,6 +71,10 @@ def get_current_user(request: Request) -> dict:
     return payload
 
 
+# -------------------------------------------------
+# Role-Based Access Control (RBAC)
+# -------------------------------------------------
+
 def require_roles(*roles: str):
     """
     Authorization dependency (RBAC).
@@ -59,15 +84,6 @@ def require_roles(*roles: str):
     Usage:
         @app.get("/admin")
         def admin_route(payload=Depends(require_roles("ADMIN")))
-
-    Args:
-        roles: Allowed roles for this endpoint
-
-    Raises:
-        403 Forbidden if the user does not have sufficient privileges
-
-    Returns:
-        JWT payload if authorization succeeds
     """
 
     def role_checker(payload: dict = Depends(get_current_user)) -> dict:
@@ -84,6 +100,10 @@ def require_roles(*roles: str):
     return role_checker
 
 
+# -------------------------------------------------
+# Resource-Based Access Control (ABAC)
+# -------------------------------------------------
+
 def has_resource_access(
     payload: dict,
     resource: str,
@@ -94,21 +114,57 @@ def has_resource_access(
     Check whether the current user has access to a specific resource.
 
     Access is granted if:
-    - the user's role is in allowed_roles
+    1. The user's role is in allowed_roles (RBAC)
     OR
-    - the user has a valid, unexpired temporary permission for the resource
+    2. The user has a valid, unexpired temporary permission (ABAC)
+
+    Optimization:
+    - JWT permission snapshot is checked FIRST (cheap)
+    - Database is checked SECOND (authoritative)
     """
 
     username = payload.get("sub")
     role = payload.get("role")
+    now = utcnow()
 
-    # Role-based access (RBAC)
+    # -------------------------------------------------
+    # 1️⃣ Role-based access (fast path)
+    # -------------------------------------------------
     if role in allowed_roles:
         return True
 
-    # Resource-based temporary access
-    now = datetime.utcnow()
+    # -------------------------------------------------
+    # 2️⃣ JWT permission snapshot (hint, not authority)
+    # -------------------------------------------------
+    jwt_permissions = payload.get("permissions", [])
 
+    for perm in jwt_permissions:
+        if perm.get("resource") != resource:
+            continue
+
+        expires_at_raw = perm.get("expires_at")
+        if not expires_at_raw:
+            continue
+
+        try:
+            expires_at = datetime.fromisoformat(expires_at_raw)
+        except ValueError:
+            continue
+
+        # Normalize timezone (defensive)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if expires_at > now:
+            # JWT says access *might* be valid
+            break
+    else:
+        # JWT does not even claim access → skip DB
+        return False
+
+    # -------------------------------------------------
+    # 3️⃣ Database verification (source of truth)
+    # -------------------------------------------------
     permission = (
         db.query(ResourcePermission)
         .filter(
@@ -118,6 +174,5 @@ def has_resource_access(
         )
         .first()
     )
-    print(permission)
 
     return permission is not None

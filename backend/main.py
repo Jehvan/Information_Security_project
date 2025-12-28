@@ -8,6 +8,11 @@ This file defines:
 - Authentication routes (signup, login, logout)
 - Protected routes
 - Role-based access control endpoints
+
+Optimization notes:
+- Permissions are included as a snapshot in the JWT at login.
+- /me returns permissions from the JWT (no DB hit).
+- /me/permissions is kept for MANUAL refresh / admin UI only — DO NOT POLL IT.
 """
 
 import re
@@ -23,7 +28,6 @@ from auth import create_access_token
 from database import engine, Base, get_db
 from dependencies import get_current_user, require_roles, has_resource_access
 from models import User, ROLE_ADMIN, ROLE_MODERATOR, ROLE_USER, ResourcePermission
-from datetime import datetime, timezone
 
 # -------------------------------------------------
 # Application setup
@@ -31,7 +35,8 @@ from datetime import datetime, timezone
 
 app = FastAPI()
 
-# JWT lifetime (seconds)
+# JWT lifetime (seconds) - hard upper bound.
+# NOTE: actual token lifetime may be shorter (<= earliest permission expiry).
 EXPIRES_SECONDS = 60
 
 # Enable CORS for frontend
@@ -50,8 +55,9 @@ Base.metadata.create_all(bind=engine)
 # Helper validation functions
 # -------------------------------------------------
 
-def utcnow():
-    return datetime.utcnow()
+def utcnow() -> datetime:
+    """Timezone-aware UTC 'now'."""
+    return datetime.now(timezone.utc)
 
 
 def is_valid_email(email: str) -> bool:
@@ -69,12 +75,11 @@ def check_password_requirements(password: str) -> bool:
     - special character
     """
     return (
-            re.search(r"[a-z]", password)
-            and re.search(r"[A-Z]", password)
-            and re.search(r"[0-9]", password)
-            and re.search(r"\W", password)
+        re.search(r"[a-z]", password)
+        and re.search(r"[A-Z]", password)
+        and re.search(r"[0-9]", password)
+        and re.search(r"\W", password)
     )
-
 
 # -------------------------------------------------
 # Authentication routes
@@ -157,6 +162,12 @@ async def login(request: Request, response: Response, db: Session = Depends(get_
     """
     Login with username/password + OTP.
     Sets a secure HttpOnly JWT cookie.
+
+    Optimization:
+    - Embed a *permission snapshot* inside the JWT at login.
+    - Token lifetime is capped by:
+        - EXPIRES_SECONDS, and
+        - earliest permission expiration (so token never outlives granted access)
     """
     data = await request.json()
 
@@ -175,10 +186,58 @@ async def login(request: Request, response: Response, db: Session = Depends(get_
     if not totp.verify(otp, valid_window=1):
         return {"success": False, "message": "Invalid OTP"}
 
+    # ----- Permission snapshot for JWT -----
+    now = utcnow()
+
+    active_permissions = (
+        db.query(ResourcePermission)
+        .filter(
+            ResourcePermission.username == user.username,
+            ResourcePermission.expires_at > now,
+        )
+        .all()
+    )
+
+    permission_claims = [
+        {
+            "resource": p.resource,
+            "expires_at": (
+                p.expires_at.replace(tzinfo=timezone.utc).isoformat()
+                if p.expires_at is not None
+                else None
+            ),
+        }
+        for p in active_permissions
+    ]
+
+    # Token should not live longer than the earliest permission expiration.
+    earliest_exp = min(
+        [
+            (
+                p.expires_at.replace(tzinfo=timezone.utc)
+                if p.expires_at.tzinfo is None
+                else p.expires_at
+            )
+            for p in active_permissions
+            if p.expires_at is not None
+        ],
+        default=now + timedelta(seconds=EXPIRES_SECONDS),
+    )
+
+    # Compute token lifetime in seconds, ensure >= 1
+    token_expires_seconds = min(
+        EXPIRES_SECONDS,
+        max(1, int((earliest_exp - now).total_seconds())),
+    )
+
     # Create JWT and set cookie
     token = create_access_token(
-        {"sub": user.username, "role": user.role},
-        expires_seconds=EXPIRES_SECONDS,
+        {
+            "sub": user.username,
+            "role": user.role,
+            "permissions": permission_claims,
+        },
+        expires_seconds=token_expires_seconds,
     )
 
     response.set_cookie(
@@ -187,11 +246,11 @@ async def login(request: Request, response: Response, db: Session = Depends(get_
         httponly=True,
         secure=True,
         samesite="none",
-        max_age=EXPIRES_SECONDS,
+        max_age=token_expires_seconds,
         path="/",
     )
 
-    return {"success": True, "expires_in": EXPIRES_SECONDS}
+    return {"success": True, "expires_in": token_expires_seconds}
 
 
 @app.post("/logout")
@@ -216,17 +275,29 @@ def protected(payload=Depends(get_current_user)):
 
 @app.get("/me")
 def get_me(payload=Depends(get_current_user)):
-    """Return current authenticated user's identity."""
+    """
+    Return current authenticated user's identity + permission snapshot.
+
+    NOTE:
+    - permissions come from JWT (fast, no DB hit)
+    - server-side enforcement still happens on protected endpoints
+    """
     return {
         "username": payload["sub"],
         "role": payload["role"],
+        "permissions": payload.get("permissions", []),
     }
+
 
 @app.get("/me/permissions")
 def get_my_permissions(
     payload=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    ⚠️ DO NOT POLL THIS ENDPOINT.
+    Use only for manual refresh / admin UI.
+    """
     now = utcnow()
 
     permissions = (
@@ -242,14 +313,11 @@ def get_my_permissions(
         "permissions": [
             {
                 "resource": p.resource,
-                "expires_at": p.expires_at
-                    .replace(tzinfo=timezone.utc)
-                    .isoformat(),
+                "expires_at": p.expires_at.replace(tzinfo=timezone.utc).isoformat(),
             }
             for p in permissions
         ]
     }
-
 
 
 # -------------------------------------------------
@@ -265,6 +333,7 @@ def admin_only(payload=Depends(require_roles(ROLE_ADMIN))):
 def moderation(payload=Depends(require_roles(ROLE_ADMIN, ROLE_MODERATOR))):
     return {"message": "Moderator access granted"}
 
+
 @app.get("/moderation/reports")
 def view_moderation_reports(
     payload=Depends(get_current_user),
@@ -277,7 +346,6 @@ def view_moderation_reports(
     but USERs may access it if they have a valid
     temporary permission.
     """
-
     if not has_resource_access(
         payload=payload,
         resource="moderation_reports",
@@ -300,13 +368,12 @@ def view_moderation_reports(
     }
 
 
-
 @app.post("/admin/set-role")
 def set_user_role(
-        username: str,
-        new_role: str,
-        payload=Depends(require_roles(ROLE_ADMIN)),
-        db: Session = Depends(get_db),
+    username: str,
+    new_role: str,
+    payload=Depends(require_roles(ROLE_ADMIN)),
+    db: Session = Depends(get_db),
 ):
     """
     Admin-only endpoint to update user roles.
@@ -321,9 +388,10 @@ def set_user_role(
     user.role = new_role
     db.commit()
 
-    return {"success": True,
-            "message": f"User {username} role updated to {new_role} successfully"
-            }
+    return {
+        "success": True,
+        "message": f"User {username} role updated to {new_role} successfully",
+    }
 
 
 @app.post("/admin/grant-access")
@@ -335,7 +403,6 @@ def grant_resource_access(
     """
     ADMIN-only endpoint to grant or extend temporary access to a resource.
     """
-
     username = data.get("username")
     resource = data.get("resource")
     duration_seconds = data.get("duration_seconds")
@@ -351,26 +418,24 @@ def grant_resource_access(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    expires_at = utcnow() + timedelta(
-        seconds=int(duration_seconds)
-    )
+    expires_at = utcnow() + timedelta(seconds=int(duration_seconds))
 
-    # 🔹 CHECK if permission already exists
+    # Check if permission already exists
     existing_permission = (
         db.query(ResourcePermission)
         .filter(
             ResourcePermission.username == username,
-            ResourcePermission.resource == resource
+            ResourcePermission.resource == resource,
         )
         .first()
     )
 
     if existing_permission:
-        # 🔁 Extend existing permission
+        # Extend existing permission
         existing_permission.expires_at = expires_at
         existing_permission.granted_by = payload["sub"]
     else:
-        # ➕ Create new permission
+        # Create new permission
         permission = ResourcePermission(
             username=username,
             resource=resource,
@@ -383,8 +448,9 @@ def grant_resource_access(
 
     return {
         "success": True,
-        "message": f"Access to '{resource}' granted to {username} until {expires_at.isoformat()}",
+        "message": f"Access to '{resource}' granted to {username} until {expires_at.replace(tzinfo=timezone.utc).isoformat()}",
     }
+
 
 @app.get("/case-files")
 def view_case_files(
@@ -428,6 +494,7 @@ def temp_admin_panel(
             "alerts": 0,
         }
     }
+
 
 @app.post("/admin/revoke-access")
 def revoke_resource_access(
