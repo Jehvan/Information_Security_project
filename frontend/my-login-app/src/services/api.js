@@ -2,11 +2,11 @@
  * api.js
  * ------
  * Centralized API layer for backend communication.
- * All fetch() calls live here.
- * Components only import and use functions.
+ * All requests go through Nginx (/api).
+ * HTTPS is terminated at Nginx.
  */
 
-const API_BASE = "https://localhost:8000";
+const API_BASE = "/api";
 
 /**
  * Login user (OTP + credentials)
@@ -110,7 +110,9 @@ export async function fetchModerationReports() {
     return res.json();
 }
 
-
+/**
+ * Fetch current user permissions
+ */
 export async function fetchMyPermissions() {
     const res = await fetch(`${API_BASE}/me/permissions`, {
         credentials: "include",
@@ -122,7 +124,6 @@ export async function fetchMyPermissions() {
 
     return res.json();
 }
-
 
 /**
  * Fetch case files (temporary resource access)
@@ -158,7 +159,7 @@ export async function fetchAdminPanelData() {
  * ADMIN: Revoke resource access
  */
 export async function revokeResourceAccess(username, resource) {
-    const res = await fetch("https://localhost:8000/admin/revoke-access", {
+    const res = await fetch(`${API_BASE}/admin/revoke-access`, {
         method: "POST",
         credentials: "include",
         headers: {
@@ -169,5 +170,3 @@ export async function revokeResourceAccess(username, resource) {
 
     return res.json();
 }
-
-
